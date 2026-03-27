@@ -1,85 +1,102 @@
+import numpy as np
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sklearn.dummy import DummyClassifier
 
-class ModelWrapper:
-    def __init__(self, model):
-        self.model = model
-
-    def fit(self, X_train, y_train):
-        self.model.fit(X_train, y_train)
-
-    def predict(self, X_test):
-        return self.model.predict(X_test)
-
-    def predict_proba(self, X_test):
-        if hasattr(self.model, "predict_proba"):
-            return self.model.predict_proba(X_test)[:, 1]
-        else:
-            raise AttributeError(f"{self.model.__class__.__name__} does not support predict_proba.")
-
-    def measure(self, X_test, y_test):
-        y_pred = self.predict(X_test)
-        
-        metrics = {
-            'accuracy': accuracy_score(y_test, y_pred),
-            'f1_score': f1_score(y_test, y_pred)
-        }
-
-        try:
-            y_prob = self.predict_proba(X_test)
-            metrics['roc_auc'] = roc_auc_score(y_test, y_prob)
-        except AttributeError:
-            metrics['roc_auc'] = None
-
-        return metrics
 
 class ModelFactory:
-    @staticmethod
-    def get_model(model_name, **kwargs):
-        """
-        Returns an wrapped model based on the requested model name.
-        
-        Supported models:
-        - 'logistic_regression'
-        - 'svm'
-        - 'random_forest'
-        """
-        model_name = model_name.lower()
-        
-        if model_name == 'logistic_regression':
-            base_model = LogisticRegression(
-                max_iter=1000, 
-                random_state=42, 
+    """
+    Returns a sklearn Pipeline (StandardScaler → Estimator).
+    Each pipeline is a fully self-contained, leak-free model unit.
+
+    Supported model names:
+        'majority'             – always predicts the majority class (baseline)
+        'logistic_regression'  – L2-regularised logistic regression
+        'svm_linear'           – Linear SVM
+        'svm_rbf'              – RBF-kernel SVM
+        'random_forest'        – Random Forest
+        'xgboost'              – Gradient Boosting (sklearn, drop-in replacement)
+    """
+
+    # ── Default hyper-parameters ────────────────────────────────────────────
+    _CONFIGS = {
+        'majority': dict(
+            estimator=DummyClassifier(strategy='most_frequent'),
+            scale=False,
+        ),
+        'logistic_regression': dict(
+            estimator=LogisticRegression(
+                max_iter=2000,
+                random_state=42,
                 class_weight='balanced',
-                C=0.1,  # Adding slight regularization to prevent overfitting
-                **kwargs
-            )
-            
-        elif model_name == 'svm':
-            base_model = SVC(
-                kernel='rbf', 
-                probability=True, 
-                random_state=42, 
+                C=0.1,
+                solver='lbfgs',
+            ),
+            scale=True,
+        ),
+        'svm_linear': dict(
+            estimator=SVC(
+                kernel='linear',
+                probability=True,
+                random_state=42,
+                class_weight='balanced',
+                C=0.1,
+            ),
+            scale=True,
+        ),
+        'svm_rbf': dict(
+            estimator=SVC(
+                kernel='rbf',
+                probability=True,
+                random_state=42,
                 class_weight='balanced',
                 C=1.0,
                 gamma='scale',
-                **kwargs
-            )
-            
-        elif model_name == 'random_forest':
-            base_model = RandomForestClassifier(
-                random_state=42, 
+            ),
+            scale=True,
+        ),
+        'random_forest': dict(
+            estimator=RandomForestClassifier(
+                n_estimators=200,
+                max_depth=10,
+                min_samples_split=5,
                 class_weight='balanced',
-                n_estimators=200,     # Increase number of trees
-                max_depth=10,         # Limit depth to prevent overfitting
-                min_samples_split=5,  # Require more samples to split a node
-                **kwargs
-            )
-            
-        else:
-            raise ValueError(f"Model '{model_name}' is not supported. "
-                             f"Choose from: 'logistic_regression', 'svm', 'random_forest'.")
+                random_state=42,
+            ),
+            scale=False,
+        ),
+        'xgboost': dict(
+            estimator=GradientBoostingClassifier(
+                n_estimators=200,
+                max_depth=4,
+                learning_rate=0.05,
+                subsample=0.8,
+                random_state=42,
+            ),
+            scale=False,
+        ),
+    }
 
-        return ModelWrapper(base_model)
+    @staticmethod
+    def get_model(model_name: str) -> Pipeline:
+        name = model_name.lower()
+        if name not in ModelFactory._CONFIGS:
+            supported = ', '.join(f"'{k}'" for k in ModelFactory._CONFIGS)
+            raise ValueError(
+                f"Model '{model_name}' is not supported. Choose from: {supported}."
+            )
+
+        cfg = ModelFactory._CONFIGS[name]
+        steps = []
+        if cfg['scale']:
+            steps.append(('scaler', StandardScaler()))
+        steps.append(('clf', cfg['estimator']))
+
+        return Pipeline(steps)
+
+    @staticmethod
+    def all_model_names():
+        return list(ModelFactory._CONFIGS.keys())
